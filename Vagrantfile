@@ -23,7 +23,7 @@ box.vm.provision "shell", inline: <<-SHELL
 yum install -y epel-release
 #install nginx
 yum install -y nginx
-yum install policycoreutils-python
+yum install -y policycoreutils-python
 #change nginx port
 sed -i 's/listen       80;/listen       4881;/'  /etc/nginx/nginx.conf /etc/nginx/nginx.conf
 #disable SELinux
