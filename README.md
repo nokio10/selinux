@@ -164,6 +164,8 @@ May 03 17:13:23 selinux systemd[1]: Started The nginx HTTP and reverse proxy ser
 ## Задание №2
 ## Обеспечить работоспособность приложения при включенном selinux
 
+### Способ №1 Изменение типа контекста безопасности для каталога /etc/named
+
 ```
 root@ubuntu:~/selinux/otus-linux-adm/selinux_dns_problems# vagrant status
 Current machine states:
@@ -203,6 +205,10 @@ drw-rwx---. root named unconfined_u:object_r:etc_t:s0   dynamic
 -rw-rw----. root named system_u:object_r:etc_t:s0       named.dns.lab
 -rw-rw----. root named system_u:object_r:etc_t:s0       named.dns.lab.view1
 -rw-rw----. root named system_u:object_r:etc_t:s0       named.newdns.lab
+```
+В логах видно, что ошибка в контексте безопасности. Вместо типа
+named_t используется тип etc_t. Изменю контекст безопасности
+```
 [root@ns01 ~]# sudo semanage fcontext -l | grep named
 /etc/rndc.*                                        regular file       system_u:object_r:named_conf_t:s0
 /var/named(/.*)?                                   all files          system_u:object_r:named_zone_t:s0
@@ -350,3 +356,88 @@ ns01.dns.lab.           3600    IN      A       192.168.50.10
 ;; MSG SIZE  rcvd: 96
 ```
 
+
+### Способ №2 создание модуля с помощью semodule
+
+Отключаю selinux на серверной машине и создаю модуль
+```
+[vagrant@client ~]$ sudo -i
+[root@client ~]# nsupdate -k /etc/named.zonetransfer.key
+> server 192.168.50.10
+>  zone ddns.lab
+> update add www.ddns.lab. 60 A 192.168.50.15
+> send
+update failed: SERVFAIL
+> quit
+[root@client ~]# reboot
+
+
+[root@ns01 ~]# setenforce 0
+[root@ns01 ~]# cat /var/log/audit/audit.log | audit2why
+type=AVC msg=audit(1651698452.879:1940): avc:  denied  { create } for  pid=5207 comm="isc-worker0000" name="named.ddns.lab.view1.jnl" scontext=system_u:system_r:named_t:s0 tcontext=system_u:object_r:etc_t:s0 tclass=file permissive=0
+
+        Was caused by:
+                Missing type enforcement (TE) allow rule.
+
+                You can use audit2allow to generate a loadable module to allow this access.
+
+type=AVC msg=audit(1651698505.123:1968): avc:  denied  { create } for  pid=5207 comm="isc-worker0000" name="named.ddns.lab.view1.jnl" scontext=system_u:system_r:named_t:s0 tcontext=system_u:object_r:etc_t:s0 tclass=file permissive=1
+
+        Was caused by:
+                Missing type enforcement (TE) allow rule.
+
+                You can use audit2allow to generate a loadable module to allow this access.
+
+type=AVC msg=audit(1651698505.123:1968): avc:  denied  { write } for  pid=5207 comm="isc-worker0000" path="/etc/named/dynamic/named.ddns.lab.view1.jnl" dev="sda1" ino=67403473 scontext=system_u:system_r:named_t:s0 tcontext=system_u:object_r:etc_t:s0 tclass=file permissive=1
+
+        Was caused by:
+                Missing type enforcement (TE) allow rule.
+
+                You can use audit2allow to generate a loadable module to allow this access.
+
+[root@ns01 ~]# audit2allow -M namedd --debug < /var/log/audit/audit.log
+******************** IMPORTANT ***********************
+To make this policy package active, execute:
+
+semodule -i namedd.pp
+
+[root@ns01 ~]# semodule -i namedd.pp
+[root@ns01 ~]# setenforce 1
+[root@ns01 ~]# reboot
+
+[root@client ~]# nsupdate -k /etc/named.zonetransfer.key
+> server 192.168.50.10
+> zone ddns.lab
+> update add www.ddns.lab. 60 A 192.168.50.15
+> send
+> quit
+[root@client ~]# dig @192.168.50.10 www.ddns.lab
+
+; <<>> DiG 9.11.4-P2-RedHat-9.11.4-26.P2.el7_9.9 <<>> @192.168.50.10 www.ddns.lab
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1937
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 2
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;www.ddns.lab.                  IN      A
+
+;; ANSWER SECTION:
+www.ddns.lab.           60      IN      A       192.168.50.15
+
+;; AUTHORITY SECTION:
+ddns.lab.               3600    IN      NS      ns01.dns.lab.
+
+;; ADDITIONAL SECTION:
+ns01.dns.lab.           3600    IN      A       192.168.50.10
+
+;; Query time: 2 msec
+;; SERVER: 192.168.50.10#53(192.168.50.10)
+;; WHEN: Wed May 04 21:13:09 UTC 2022
+;; MSG SIZE  rcvd: 96
+```
+
+Первый способ решения является приоритетным, так как устраняет причину неисправности.
